@@ -21,7 +21,7 @@ USE_WAKE_WORD = True
 WAKE_WORDS = (
     "sage voice assistant", "sage assistant", "sage voice", "sage ai", "sage",
     "hey sage", "hello sage", "hi sage",
-    # Google transcription sometimes hears the name "Sage" as "stage".
+
     "hey stage assistant", "stage assistant", "hey stage", "stage",
 )
 LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sage_assistant.log")
@@ -122,8 +122,8 @@ def hear_command(recognizer, microphone):
     """Wait for the wake phrase, then return any command spoken after it."""
     while True:
         try:
-            # Give the user time to begin speaking and allow a full command after
-            # the wake word. Very short limits clipped phrases in normal speech.
+            # Gives time to speak full commands
+            
             heard = recognize(recognizer, microphone, timeout=3, phrase_time_limit=8)
             log(f"Heard: {heard}")
             if not USE_WAKE_WORD:
