@@ -1,0 +1,5 @@
+PyAudio
+pyttsx3
+screen-brightness-control
+SpeechRecognition
+Wikipedia-API
