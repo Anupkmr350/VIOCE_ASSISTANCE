@@ -1,29 +1,31 @@
 """SAGE voice assistant for Windows 10/11.
 
-Wake detection uses Google Speech Recognition, so an internet connection is needed.
+The Alexa wake phrase is detected locally. Commands are transcribed by Google
+Speech Recognition, which requires an internet connection.
 """
 
 import ctypes
 import datetime
 import os
 import re
-import subprocess 
+import subprocess
 import time
 import webbrowser
 from urllib.parse import quote_plus
 
+import numpy as np
+import openwakeword.utils
 import pyttsx3
 import screen_brightness_control as sbc
 import speech_recognition as sr
+import sounddevice as sd
 import wikipediaapi
+from openwakeword.model import Model
 
-USE_WAKE_WORD = True
-WAKE_WORDS = (
-    "sage voice assistant", "sage assistant", "sage voice", "sage ai", "sage",
-    "hey sage", "hello sage", "hi sage",
-    # Google transcription sometimes hears the name "Sage" as "stage".
-    "hey stage assistant", "stage assistant", "hey stage", "stage",
-)
+WAKE_WORD_MODEL = "alexa"
+WAKE_THRESHOLD = 0.5
+WAKE_SAMPLE_RATE = 16_000
+WAKE_FRAME_SAMPLES = 1_280  # 80 ms at 16 kHz
 LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sage_assistant.log")
 
 VK_VOLUME_MUTE = 0xAD
@@ -38,8 +40,8 @@ wiki_agent = wikipediaapi.Wikipedia(
 CUSTOM_LINKS = [
     (("student login", "student log in", "cuims", "uims", "cuim"), "CUIMS", "https://uims.cuchd.in/"),
     (("my github",), "GitHub", "https://github.com"),
-    (("chat gpt", "chatgpt", "chat g p t"), "ChatGPT", "https://chatgpt.com/"),
-    (("claude",), "Claude", "https://claude.ai/"),
+    (("chat gpt", "chatgpt", "chat g p t", "openai", "open ai"), "ChatGPT", "https://chatgpt.com/"),
+    (("claude", "cloud"), "Claude", "https://claude.ai/"),
     (("gemini",), "Gemini", "https://gemini.google.com/app"),
     (("copilot", "co pilot"), "Microsoft Copilot", "https://copilot.microsoft.com/"),
     (("perplexity",), "Perplexity", "https://www.perplexity.ai/"),
@@ -50,6 +52,7 @@ CUSTOM_LINKS = [
     (("mistral vibe", "mistral", "le chat"), "Mistral Vibe", "https://chat.mistral.ai/"),
     (("notebook lm", "notebooklm"), "NotebookLM", "https://notebooklm.google.com/"),
     (("google ai studio", "ai studio"), "Google AI Studio", "https://aistudio.google.com/"),
+    (("youtube", "you tube", "you too"), "YouTube", "https://www.youtube.com/"),
 ]
 SITES = {
     "youtube": ("YouTube", "https://www.youtube.com", "https://www.youtube.com/results?search_query={}"),
@@ -119,30 +122,48 @@ def recognize(recognizer, microphone, timeout=5, phrase_time_limit=5):
 
 
 def hear_command(recognizer, microphone):
-    """Wait for the wake phrase, then return any command spoken after it."""
-    while True:
+    """Wait for local Alexa detection, then transcribe one spoken command."""
+    log('Waiting for wake phrase: "Alexa"')
+    wait_for_wake_word()
+    speak("I'm listening")
+    for attempt in range(2):
         try:
-            # Give the user time to begin speaking and allow a full command after
-            # the wake word. Very short limits clipped phrases in normal speech.
-            heard = recognize(recognizer, microphone, timeout=3, phrase_time_limit=8)
-            log(f"Heard: {heard}")
-            if not USE_WAKE_WORD:
-                return heard
-            for wake in sorted(WAKE_WORDS, key=len, reverse=True):
-                match = re.search(rf"\b{re.escape(wake)}\b", heard, re.IGNORECASE)
-                if match:
-                    remainder = (heard[:match.start()] + " " + heard[match.end():]).strip(" ,.!?")
-                    if remainder:
-                        return remainder
-                    speak("I'm listening")
-                    return recognize(recognizer, microphone, timeout=8, phrase_time_limit=7)
-        except sr.WaitTimeoutError:
-            continue
-        except sr.UnknownValueError:
-            continue
+            command = recognize(recognizer, microphone, timeout=3.5, phrase_time_limit=5)
+            log(f"Heard command: {command}")
+            return command
+        except (sr.WaitTimeoutError, sr.UnknownValueError):
+            if attempt == 0:
+                speak("I didn't catch that. Please repeat the command.")
+            else:
+                log("Command was not recognized after one retry.")
+                return ""
         except sr.RequestError:
-            log("Speech service/network error while listening for wake phrase; retrying.")
+            speak("Speech recognition is unavailable. Check your internet connection.")
             time.sleep(2)
+            return ""
+
+
+def wait_for_wake_word():
+    """Listen continuously for Alexa using the local openWakeWord model."""
+    with sd.RawInputStream(
+        samplerate=WAKE_SAMPLE_RATE,
+        blocksize=WAKE_FRAME_SAMPLES,
+        channels=1,
+        dtype="int16",
+    ) as audio_stream:
+        while True:
+            raw_audio, overflowed = audio_stream.read(WAKE_FRAME_SAMPLES)
+            if overflowed:
+                log("Wake listener audio buffer overflow; continuing.")
+            frame = np.frombuffer(raw_audio, dtype=np.int16)
+            scores = wake_detector.predict(frame)
+            score = scores.get("alexa", max(scores.values(), default=0.0))
+            if score >= WAKE_THRESHOLD:
+                log(f'Wake phrase detected: Alexa (score {score:.2f})')
+                # Clear the audio that contained the wake phrase. Otherwise the
+                # next loop can immediately trigger again on buffered audio.
+                wake_detector.reset()
+                return
 
 
 def percentage(text):
@@ -271,6 +292,22 @@ def handle_web(query):
 
 def handle_command(query):
     global is_muted
+    if re.search(r"\bshut\s*down\s+(?:(?:my|the)\s+)?(?:pc|computer|laptop)\b", query):
+        speak("Shutting down this PC in five seconds.")
+        try:
+            subprocess.Popen(["shutdown.exe", "/s", "/t", "5"], shell=False)
+        except OSError as exc:
+            log(f"Could not start Windows shutdown: {exc}")
+            speak("I could not shut down the PC")
+        return False
+    if re.search(r"\b(?:restart|reboot)\s+(?:(?:my|the)\s+)?(?:pc|computer|laptop)\b", query):
+        speak("Restarting this PC in five seconds.")
+        try:
+            subprocess.Popen(["shutdown.exe", "/r", "/t", "5"], shell=False)
+        except OSError as exc:
+            log(f"Could not start Windows restart: {exc}")
+            speak("I could not restart the PC")
+        return False
     if has_word(query, "stop") or has_word(query, "exit") or has_word(query, "quit"):
         speak("Goodbye")
         return False
@@ -328,9 +365,25 @@ def handle_command(query):
 
 
 def main():
+    global wake_detector
     recognizer = sr.Recognizer()
     recognizer.dynamic_energy_threshold = True
-    recognizer.pause_threshold = 1.0
+    # Wait through natural pauses so longer commands aren't cut off early.
+    recognizer.pause_threshold = 2.5
+
+    try:
+        log("Loading Alexa wake-word model...")
+        openwakeword.utils.download_models(model_names=[WAKE_WORD_MODEL])
+        wake_detector = Model(
+            wakeword_models=[WAKE_WORD_MODEL],
+            inference_framework="onnx",
+            vad_threshold=0.5,
+        )
+    except Exception as exc:
+        log(f"Could not load Alexa wake-word model: {exc}")
+        log("Check your internet connection, then restart SAGE.")
+        return
+
     try:
         microphone = sr.Microphone()
     except Exception as exc:
@@ -342,11 +395,13 @@ def main():
             recognizer.adjust_for_ambient_noise(source, duration=1.0)
     except Exception as exc:
         print(f"Microphone calibration skipped: {exc}")
-    speak("SAGE is ready. Say Sage, then your command.")
+    log('SAGE is ready and waiting for Alexa.')
     while True:
         try:
             command = hear_command(recognizer, microphone)
             print(f"Command: {command}")
+            if not command:
+                continue
             if not handle_command(command):
                 break
         except KeyboardInterrupt:

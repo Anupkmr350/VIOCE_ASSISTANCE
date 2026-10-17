@@ -5,11 +5,11 @@
 1. Install Python 3.10 or newer from python.org and select **Add python.exe to PATH**.
 2. Open this folder in File Explorer. Right-click `setup_startup.ps1` and choose **Run with PowerShell**. If Windows blocks the script, open PowerShell in this folder and run `powershell -ExecutionPolicy Bypass -File .\setup_startup.ps1`.
 3. Approve microphone access for Python in **Settings → Privacy & security → Microphone**. Keep an internet connection available for voice recognition and Wikipedia lookups.
-4. Sign out and back in, or restart Windows. SAGE will start at sign-in and wait for “Sage” or a supported wake phrase.
+4. Sign out and back in, or restart Windows. SAGE will start at sign-in and wait for **“Alexa”**. On its first run, it downloads the Alexa wake-word model; keep the laptop connected to the internet for this initial download.
 
-Say a wake phrase and command together, for example **“Hey Sage, what time is it?”** or say **“Sage”**, wait for “I'm listening”, then give the command. Say **“Sage, stop”** to exit the running assistant.
+Say **“Alexa”**, wait for SAGE to say “I'm listening”, then speak your command, for example **“open ChatGPT”**, **“what time is it?”**, or **“play relaxing music on YouTube.”** Give the wake phrase and command as separate utterances. To exit SAGE, say **“Alexa”**, wait for “I'm listening”, then say **“stop.”**
 
-The assistant uses Google's speech recognition through the SpeechRecognition package, so captured speech is sent to that online service for transcription. It does not use a dedicated offline wake-word engine. The microphone is sampled continuously in short listening windows while SAGE is running.
+The Alexa wake phrase is detected locally with openWakeWord. After wake detection, SAGE uses Google's speech recognition through the SpeechRecognition package to transcribe the command, so command audio is sent to that online service. An internet connection is still needed for commands and Wikipedia lookups.
 
 ## Commands
 
@@ -18,6 +18,7 @@ The assistant uses Google's speech recognition through the SpeechRecognition pac
 - “Wikipedia [topic]”, “what time is it?”
 - “Volume up/down”, “set volume to 50 percent”, “mute”, “unmute”
 - “Brightness up/down”, “set brightness to 60 percent”
+- “Shut down PC” or “restart PC” (Windows begins the action after a five-second delay)
 
 The available application commands depend on what is installed and available on PATH. MySQL Workbench uses its default Windows installation path in the script.
 

@@ -3,3 +3,5 @@ pyttsx3
 screen-brightness-control
 SpeechRecognition
 Wikipedia-API
+openwakeword==0.6.0
+sounddevice>=0.5.1,<1
